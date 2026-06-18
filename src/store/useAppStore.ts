@@ -43,6 +43,7 @@ interface AppState {
   computeSchedule: () => ScheduleResult[];
   getBottlenecks: () => BottleneckInfo[];
   getDashboardMetrics: () => DashboardMetrics;
+  rescheduleAll: () => number;
   
   getTasksByWorkOrder: (workOrderId: string) => ProcessTask[];
   getWorkOrderProgress: (workOrderId: string) => number;
@@ -488,5 +489,114 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     
     return Math.round((progress / tasks.length) * 100);
+  },
+
+  rescheduleAll: () => {
+    const { workOrders, products, workstations, processTasks } = get();
+    const workHoursPerDay = 8;
+    const startOfDay = new Date();
+    startOfDay.setHours(8, 0, 0, 0);
+
+    const activeOrders = [...workOrders]
+      .filter(o => o.status !== 'completed' && o.status !== 'warehoused')
+      .sort((a, b) => {
+        const priorityOrder = { high: 0, medium: 1, low: 2 };
+        const pa = priorityOrder[a.priority || 'medium'];
+        const pb = priorityOrder[b.priority || 'medium'];
+        if (pa !== pb) return pa - pb;
+        return new Date(a.deliveryDate).getTime() - new Date(b.deliveryDate).getTime();
+      });
+
+    const workstationQueues: Record<string, Date> = {};
+    workstations.forEach(ws => {
+      workstationQueues[ws.id] = new Date(startOfDay);
+    });
+
+    const orderUpdates: Record<string, { scheduledStartDate?: string; estimatedCompletionDate?: string; status: WorkOrder['status'] }> = {};
+    const taskUpdates: Record<string, { workstationId: string; workstationName: string }> = {};
+
+    activeOrders.forEach(order => {
+      const product = products.find(p => p.id === order.productId);
+      if (!product) return;
+
+      const orderTasks = processTasks
+        .filter(t => t.workOrderId === order.id)
+        .sort((a, b) => a.seq - b.seq);
+
+      let prevTaskEnd: Date | null = null;
+
+      orderTasks.forEach(task => {
+        const step = product.processRoute.find(s => s.name === task.processName);
+        if (!step) return;
+
+        const availableWorkstations = workstations.filter(
+          ws => ws.type === step.workstationType && ws.status !== 'down'
+        );
+        if (availableWorkstations.length === 0) return;
+
+        let earliestWs = availableWorkstations[0];
+        let earliestTime = workstationQueues[earliestWs.id];
+        availableWorkstations.forEach(ws => {
+          if (workstationQueues[ws.id] < earliestTime) {
+            earliestTime = workstationQueues[ws.id];
+            earliestWs = ws;
+          }
+        });
+
+        let taskStart: Date;
+        if (task.status === 'in_progress' && task.startTime) {
+          taskStart = new Date(task.startTime);
+        } else if (prevTaskEnd) {
+          taskStart = new Date(Math.max(prevTaskEnd.getTime(), earliestTime.getTime()));
+        } else {
+          taskStart = new Date(earliestTime);
+        }
+
+        const totalMinutes = order.quantity * step.cycleTime;
+        const totalHours = totalMinutes / 60;
+        const workDays = Math.ceil(totalHours / workHoursPerDay);
+        const actualDurationHours = Math.max(workDays * workHoursPerDay, 1);
+        const taskEnd = new Date(taskStart.getTime() + actualDurationHours * 60 * 60 * 1000);
+
+        workstationQueues[earliestWs.id] = taskEnd;
+        prevTaskEnd = taskEnd;
+
+        if (task.status === 'pending') {
+          taskUpdates[task.id] = {
+            workstationId: earliestWs.id,
+            workstationName: earliestWs.name,
+          };
+        }
+      });
+
+      const orderStartDate = startOfDay.toISOString().split('T')[0];
+      const orderEndDate = prevTaskEnd ? prevTaskEnd.toISOString().split('T')[0] : undefined;
+      const newStatus: WorkOrder['status'] = order.status === 'producing' ? 'producing' : 'scheduled';
+      orderUpdates[order.id] = {
+        scheduledStartDate: orderStartDate,
+        estimatedCompletionDate: orderEndDate,
+        status: newStatus,
+      };
+    });
+
+    set((state) => ({
+      workOrders: state.workOrders.map(o => {
+        const upd = orderUpdates[o.id];
+        if (!upd) return o;
+        return {
+          ...o,
+          status: upd.status,
+          scheduledStartDate: upd.scheduledStartDate,
+          estimatedCompletionDate: upd.estimatedCompletionDate,
+        };
+      }),
+      processTasks: state.processTasks.map(t => {
+        const upd = taskUpdates[t.id];
+        if (!upd) return t;
+        return { ...t, workstationId: upd.workstationId, workstationName: upd.workstationName };
+      }),
+    }));
+
+    return activeOrders.length;
   },
 }));

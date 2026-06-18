@@ -4,7 +4,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { ScanLine, Play, CheckCircle, Clock, User, Package, AlertTriangle, X } from 'lucide-react';
 
 export function ReportingPage() {
-  const { processTasks, workstations, startProcessTask, completeProcessTask, addException } = useAppStore();
+  const { processTasks, workstations, startProcessTask, completeProcessTask, addException, workOrders } = useAppStore();
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [showExceptionModal, setShowExceptionModal] = useState(false);
@@ -19,10 +19,55 @@ export function ReportingPage() {
   });
   const [scanInput, setScanInput] = useState('');
   const [operatorName, setOperatorName] = useState('');
+  const [scanFilter, setScanFilter] = useState<string | null>(null);
+  const [scanMessage, setScanMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const pendingTasks = processTasks.filter(t => t.status === 'pending');
   const inProgressTasks = processTasks.filter(t => t.status === 'in_progress');
   const completedTasks = processTasks.filter(t => t.status === 'completed').slice(0, 10);
+
+  const filteredPending = scanFilter
+    ? pendingTasks.filter(t => t.workOrderId === scanFilter)
+    : pendingTasks;
+  const filteredInProgress = scanFilter
+    ? inProgressTasks.filter(t => t.workOrderId === scanFilter)
+    : inProgressTasks;
+
+  const handleScanQuery = () => {
+    const keyword = scanInput.trim().toUpperCase();
+    if (!keyword) {
+      setScanFilter(null);
+      setScanMessage(null);
+      return;
+    }
+    const matchedOrder = workOrders.find(
+      o => o.orderNo.toUpperCase() === keyword || o.orderNo.toUpperCase().includes(keyword)
+    );
+    if (matchedOrder) {
+      setScanFilter(matchedOrder.id);
+      setScanMessage({
+        type: 'success',
+        text: `已定位工单 ${matchedOrder.orderNo}（${matchedOrder.productName}，${matchedOrder.quantity}件）`,
+      });
+    } else {
+      setScanFilter(null);
+      setScanMessage({ type: 'error', text: `未找到工单号 "${scanInput}"，请检查后重新输入` });
+    }
+  };
+
+  const handleScanKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleScanQuery();
+    }
+  };
+
+  const clearScanFilter = () => {
+    setScanFilter(null);
+    setScanMessage(null);
+    setScanInput('');
+  };
+
+  const scannedOrder = scanFilter ? workOrders.find(o => o.id === scanFilter) : null;
 
   const handleStartTask = (taskId: string) => {
     if (!operatorName) {
@@ -201,14 +246,59 @@ export function ReportingPage() {
               placeholder="扫描工单二维码或输入工单号..."
               value={scanInput}
               onChange={(e) => setScanInput(e.target.value)}
+              onKeyDown={handleScanKeyDown}
               className="w-full h-12 bg-[#272E3B] border-2 border-[#3D4455] rounded-lg pl-12 pr-4 text-white placeholder-[#86909C] focus:outline-none focus:border-[#165DFF] text-lg transition-colors"
             />
           </div>
-          <button className="h-12 px-6 bg-[#165DFF] hover:bg-[#0E42B3] text-white rounded-lg transition-colors flex items-center gap-2">
+          <button
+            onClick={handleScanQuery}
+            className="h-12 px-6 bg-[#165DFF] hover:bg-[#0E42B3] text-white rounded-lg transition-colors flex items-center gap-2"
+          >
             <ScanLine className="w-5 h-5" />
             扫码查询
           </button>
         </div>
+        {scanMessage && (
+          <div className={`mt-3 flex items-center justify-between px-4 py-2.5 rounded-lg text-sm ${
+            scanMessage.type === 'success'
+              ? 'bg-[#165DFF]/10 border border-[#165DFF]/30 text-[#165DFF]'
+              : 'bg-[#F53F3F]/10 border border-[#F53F3F]/30 text-[#F53F3F]'
+          }`}>
+            <span className="flex items-center gap-2">
+              {scanMessage.type === 'success' ? (
+                <CheckCircle className="w-4 h-4" />
+              ) : (
+                <AlertTriangle className="w-4 h-4" />
+              )}
+              {scanMessage.text}
+            </span>
+            {scanFilter && (
+              <button
+                onClick={clearScanFilter}
+                className="flex items-center gap-1 text-xs hover:underline"
+              >
+                清除筛选
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+        {scannedOrder && (
+          <div className="mt-3 flex items-center gap-4 px-4 py-3 bg-[#165DFF]/5 border border-[#165DFF]/20 rounded-lg">
+            <Package className="w-5 h-5 text-[#165DFF]" />
+            <div className="flex-1">
+              <p className="text-white text-sm font-medium">
+                {scannedOrder.productName}
+                <span className="text-[#86909C] ml-2">· {scannedOrder.productModel}</span>
+              </p>
+              <p className="text-[#86909C] text-xs mt-0.5">
+                计划 {scannedOrder.quantity} 件 · 交期 {scannedOrder.deliveryDate}
+                {scannedOrder.customerName ? ` · ${scannedOrder.customerName}` : ''}
+              </p>
+            </div>
+            <StatusBadge status={scannedOrder.status} />
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-3 gap-6">
@@ -216,15 +306,15 @@ export function ReportingPage() {
           <div className="flex items-center gap-2 mb-4">
             <div className="w-2 h-2 rounded-full bg-[#86909C]" />
             <h3 className="font-semibold text-white">待开工</h3>
-            <span className="text-[#86909C] text-sm">({pendingTasks.length})</span>
+            <span className="text-[#86909C] text-sm">({filteredPending.length})</span>
           </div>
           <div className="space-y-3">
-            {pendingTasks.slice(0, 8).map(task => (
+            {filteredPending.slice(0, 8).map(task => (
               <TaskCard key={task.id} task={task} type="pending" />
             ))}
-            {pendingTasks.length === 0 && (
+            {filteredPending.length === 0 && (
               <div className="py-8 text-center text-[#86909C] text-sm">
-                暂无待开工任务
+                {scanFilter ? '该工单暂无待开工工序' : '暂无待开工任务'}
               </div>
             )}
           </div>
@@ -234,15 +324,15 @@ export function ReportingPage() {
           <div className="flex items-center gap-2 mb-4">
             <div className="w-2 h-2 rounded-full bg-[#00B42A] animate-pulse" />
             <h3 className="font-semibold text-white">生产中</h3>
-            <span className="text-[#86909C] text-sm">({inProgressTasks.length})</span>
+            <span className="text-[#86909C] text-sm">({filteredInProgress.length})</span>
           </div>
           <div className="space-y-3">
-            {inProgressTasks.map(task => (
+            {filteredInProgress.map(task => (
               <TaskCard key={task.id} task={task} type="progress" />
             ))}
-            {inProgressTasks.length === 0 && (
+            {filteredInProgress.length === 0 && (
               <div className="py-8 text-center text-[#86909C] text-sm">
-                暂无生产中任务
+                {scanFilter ? '该工单暂无生产中工序' : '暂无生产中任务'}
               </div>
             )}
           </div>

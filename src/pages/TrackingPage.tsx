@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
 import {
@@ -12,12 +12,15 @@ import {
   TrendingUp,
   User,
   Factory,
+  X,
+  CalendarClock,
 } from 'lucide-react';
 
 export function TrackingPage() {
-  const { workOrders, processTasks, getWorkOrderProgress, getTasksByWorkOrder } = useAppStore();
+  const { workOrders, processTasks, getWorkOrderProgress, getTasksByWorkOrder, computeSchedule, getBottlenecks, products } = useAppStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOrder, setSelectedOrder] = useState<string | null>(null);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
 
   const filteredOrders = workOrders.filter(order =>
     order.orderNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -49,6 +52,29 @@ export function TrackingPage() {
 
   const selectedOrderData = workOrders.find(o => o.id === selectedOrder);
   const selectedTasks = selectedOrder ? getTasksByWorkOrder(selectedOrder) : [];
+
+  const orderSchedule = useMemo(() => {
+    if (!selectedOrder) return null;
+    const allSchedules = computeSchedule();
+    return allSchedules.find(s => s.workOrderId === selectedOrder) || null;
+  }, [selectedOrder, computeSchedule]);
+
+  const orderBottlenecks = useMemo(() => {
+    if (!selectedOrderData) return [];
+    const product = products.find(p => p.id === selectedOrderData.productId);
+    if (!product) return [];
+    const allBottlenecks = getBottlenecks();
+    const orderProcessTypes = [...new Set(product.processRoute.map(s => s.workstationType))];
+    return allBottlenecks.filter(b => orderProcessTypes.includes(b.workstationType));
+  }, [selectedOrderData, products, getBottlenecks]);
+
+  const estimatedVsDeliveryRisk = useMemo(() => {
+    if (!selectedOrderData || !selectedOrderData.estimatedCompletionDate) return null;
+    const estimated = new Date(selectedOrderData.estimatedCompletionDate);
+    const delivery = new Date(selectedOrderData.deliveryDate);
+    const diffDays = Math.ceil((delivery.getTime() - estimated.getTime()) / (1000 * 60 * 60 * 24));
+    return { diffDays, isAtRisk: diffDays < 0 };
+  }, [selectedOrderData]);
 
   return (
     <div className="space-y-6">
@@ -285,7 +311,10 @@ export function TrackingPage() {
                       ? `预计完成: ${selectedOrderData.estimatedCompletionDate}`
                       : '尚未排程'}
                   </div>
-                  <button className="text-[#165DFF] text-sm hover:underline flex items-center gap-1">
+                  <button
+                    onClick={() => setShowScheduleModal(true)}
+                    className="text-[#165DFF] text-sm hover:underline flex items-center gap-1"
+                  >
                     查看排程详情
                     <ChevronRight className="w-4 h-4" />
                   </button>
@@ -300,6 +329,173 @@ export function TrackingPage() {
           )}
         </div>
       </div>
+
+      {showScheduleModal && selectedOrderData && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-[#1D2129] rounded-lg border border-[#2D3340] w-[680px] max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#2D3340] sticky top-0 bg-[#1D2129] z-10">
+              <h3 className="font-semibold text-white flex items-center gap-2">
+                <CalendarClock className="w-5 h-5 text-[#165DFF]" />
+                排程详情 · {selectedOrderData.orderNo}
+              </h3>
+              <button
+                onClick={() => setShowScheduleModal(false)}
+                className="text-[#86909C] hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-5">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-[#272E3B] rounded-lg p-3">
+                  <p className="text-[#86909C] text-xs">计划投产</p>
+                  <p className="text-white text-sm font-mono mt-1">
+                    {selectedOrderData.scheduledStartDate || '未排程'}
+                  </p>
+                </div>
+                <div className="bg-[#272E3B] rounded-lg p-3">
+                  <p className="text-[#86909C] text-xs">预计完工</p>
+                  <p className="text-white text-sm font-mono mt-1">
+                    {selectedOrderData.estimatedCompletionDate || '未计算'}
+                  </p>
+                </div>
+                <div className="bg-[#272E3B] rounded-lg p-3">
+                  <p className="text-[#86909C] text-xs">交货日期</p>
+                  <p className="text-white text-sm font-mono mt-1">
+                    {selectedOrderData.deliveryDate}
+                  </p>
+                </div>
+              </div>
+
+              {estimatedVsDeliveryRisk && (
+                <div className={`flex items-center gap-3 px-4 py-3 rounded-lg border ${
+                  estimatedVsDeliveryRisk.isAtRisk
+                    ? 'bg-[#F53F3F]/10 border-[#F53F3F]/30'
+                    : 'bg-[#00B42A]/10 border-[#00B42A]/30'
+                }`}>
+                  <AlertTriangle className={`w-5 h-5 ${
+                    estimatedVsDeliveryRisk.isAtRisk ? 'text-[#F53F3F]' : 'text-[#00B42A]'
+                  }`} />
+                  <div className="flex-1">
+                    <p className={`text-sm font-medium ${
+                      estimatedVsDeliveryRisk.isAtRisk ? 'text-[#F53F3F]' : 'text-[#00B42A]'
+                    }`}>
+                      {estimatedVsDeliveryRisk.isAtRisk
+                        ? `交期风险：预计完工日晚于交货期 ${Math.abs(estimatedVsDeliveryRisk.diffDays)} 天`
+                        : `交期正常：预计完工早于交货期 ${estimatedVsDeliveryRisk.diffDays} 天`}
+                    </p>
+                    <p className="text-[#86909C] text-xs mt-0.5">
+                      客服可据此判断是否需要与客户沟通调整交期
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <h4 className="text-white text-sm font-medium mb-3 flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-[#165DFF]" />
+                  各工序计划时间
+                </h4>
+                {orderSchedule && orderSchedule.tasks.length > 0 ? (
+                  <div className="space-y-2">
+                    {orderSchedule.tasks.map((task, index) => (
+                      <div
+                        key={index}
+                        className="flex items-center gap-3 bg-[#272E3B] rounded-lg p-3 border border-[#3D4455]"
+                      >
+                        <div className="w-7 h-7 rounded-full bg-[#165DFF]/20 flex items-center justify-center flex-shrink-0">
+                          <span className="text-[#165DFF] text-xs font-bold">{task.seq}</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-white text-sm font-medium">{task.processName}</span>
+                            <span className="text-[#86909C] text-xs">· {task.workstationName}</span>
+                          </div>
+                          <div className="flex items-center gap-4 mt-1 text-xs text-[#86909C]">
+                            <span className="flex items-center gap-1">
+                              <Calendar className="w-3 h-3" />
+                              {new Date(task.plannedStart).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                            <span>→</span>
+                            <span className="flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              {new Date(task.plannedEnd).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <p className="text-white text-sm font-mono">
+                            {Math.round(task.duration / 60 * 10) / 10}h
+                          </p>
+                          <p className="text-[#86909C] text-[10px]">工时</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="py-8 text-center text-[#86909C] text-sm bg-[#272E3B] rounded-lg">
+                    该订单暂无排程数据，请前往生产排程页面进行排程
+                  </div>
+                )}
+              </div>
+
+              {orderBottlenecks.length > 0 && (
+                <div>
+                  <h4 className="text-white text-sm font-medium mb-3 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-[#FF7D00]" />
+                    相关工序瓶颈提示
+                  </h4>
+                  <div className="space-y-2">
+                    {orderBottlenecks.map((bottle, index) => (
+                      <div
+                        key={index}
+                        className={`flex items-center justify-between px-4 py-2.5 rounded-lg border ${
+                          bottle.isBottleneck
+                            ? 'bg-[#F53F3F]/10 border-[#F53F3F]/30'
+                            : 'bg-[#272E3B] border-[#3D4455]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-white text-sm">{bottle.workstationType}</span>
+                          {bottle.isBottleneck && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#F53F3F]/20 text-[#F53F3F]">
+                              瓶颈
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <div className="text-right">
+                            <span className={`text-sm font-mono ${
+                              bottle.isBottleneck ? 'text-[#F53F3F]' : 'text-white'
+                            }`}>
+                              {bottle.workload}%
+                            </span>
+                            <span className="text-[#86909C] text-xs ml-1">负载</span>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-white text-sm font-mono">{bottle.affectedOrders}</span>
+                            <span className="text-[#86909C] text-xs ml-1">影响订单</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-4 border-t border-[#2D3340] flex justify-end">
+              <button
+                onClick={() => setShowScheduleModal(false)}
+                className="px-4 py-2 bg-[#165DFF] hover:bg-[#0E42B3] text-white text-sm rounded transition-colors"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

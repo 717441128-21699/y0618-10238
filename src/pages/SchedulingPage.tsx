@@ -1,15 +1,28 @@
 import { useState, useMemo } from 'react';
 import { useAppStore } from '@/store/useAppStore';
-import { CalendarClock, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, TrendingUp } from 'lucide-react';
+import { CalendarClock, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, TrendingUp, CheckCircle2 } from 'lucide-react';
 import { StatusBadge } from '@/components/StatusBadge';
 
 export function SchedulingPage() {
-  const { computeSchedule, getBottlenecks, workOrders, workstations } = useAppStore();
+  const { computeSchedule, getBottlenecks, workOrders, workstations, rescheduleAll } = useAppStore();
   const [daysRange, setDaysRange] = useState(7);
   const [startOffset, setStartOffset] = useState(0);
+  const [rescheduleMessage, setRescheduleMessage] = useState<{ type: 'success' | 'info'; text: string } | null>(null);
+  const [isRescheduling, setIsRescheduling] = useState(false);
 
   const schedules = useMemo(() => computeSchedule(), [computeSchedule]);
   const bottlenecks = useMemo(() => getBottlenecks(), [getBottlenecks]);
+
+  const handleReschedule = () => {
+    setIsRescheduling(true);
+    const affectedCount = rescheduleAll();
+    setIsRescheduling(false);
+    setRescheduleMessage({
+      type: 'success',
+      text: `已完成重新排程：共重新计算 ${affectedCount} 个在制订单的计划时间与工序分配`,
+    });
+    setTimeout(() => setRescheduleMessage(null), 6000);
+  };
 
   const startDate = new Date();
   startDate.setDate(startDate.getDate() + startOffset);
@@ -96,12 +109,27 @@ export function SchedulingPage() {
               <ChevronRight className="w-4 h-4 text-[#C9CDD4]" />
             </button>
           </div>
-          <button className="flex items-center gap-2 px-3 py-2 bg-[#1D2129] border border-[#2D3340] hover:border-[#3D4455] text-white text-sm rounded transition-colors">
-            <RefreshCw className="w-4 h-4" />
-            重新排程
+          <button
+            onClick={handleReschedule}
+            disabled={isRescheduling}
+            className="flex items-center gap-2 px-3 py-2 bg-[#165DFF] hover:bg-[#0E42B3] border border-[#165DFF] text-white text-sm rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRescheduling ? 'animate-spin' : ''}`} />
+            {isRescheduling ? '排程中...' : '重新排程'}
           </button>
         </div>
       </div>
+
+      {rescheduleMessage && (
+        <div className={`flex items-center gap-3 px-4 py-3 rounded-lg border ${
+          rescheduleMessage.type === 'success'
+            ? 'bg-[#00B42A]/10 border-[#00B42A]/30 text-[#00B42A]'
+            : 'bg-[#165DFF]/10 border-[#165DFF]/30 text-[#165DFF]'
+        }`}>
+          <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+          <span className="text-sm">{rescheduleMessage.text}</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-4 gap-4">
         {bottlenecks.slice(0, 4).map((bottle, index) => (

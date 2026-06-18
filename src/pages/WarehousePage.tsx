@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { StatusBadge } from '@/components/StatusBadge';
-import { Package, Plus, CheckCircle, Truck, Search, Calendar, User, X } from 'lucide-react';
+import { Package, Plus, CheckCircle, Truck, Search, Calendar, User, X, AlertTriangle } from 'lucide-react';
 
 export function WarehousePage() {
-  const { workOrders, warehouseEntries, addWarehouseEntry, processTasks, getWorkOrderProgress } = useAppStore();
+  const { workOrders, warehouseEntries, addWarehouseEntry, processTasks } = useAppStore();
   const [showModal, setShowModal] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [entryData, setEntryData] = useState({
     workOrderId: '',
@@ -22,10 +23,23 @@ export function WarehousePage() {
     e.productName.includes(searchTerm)
   );
 
+  const selectedOrderForEntry = workOrders.find(o => o.id === entryData.workOrderId);
+  const orderPlannedQty = selectedOrderForEntry?.quantity || 0;
+  const orderQualifiedQty = selectedOrderForEntry
+    ? processTasks.filter(t => t.workOrderId === selectedOrderForEntry.id).reduce((sum, t) => sum + t.qualifiedQty, 0)
+    : 0;
+  const quantityMismatch = entryData.quantity !== orderPlannedQty;
+  const isShortDelivery = entryData.quantity < orderPlannedQty;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const order = workOrders.find(o => o.id === entryData.workOrderId);
     if (!order || !entryData.operator) return;
+
+    if (quantityMismatch) {
+      setShowConfirmModal(true);
+      return;
+    }
 
     addWarehouseEntry({
       workOrderId: entryData.workOrderId,
@@ -37,6 +51,23 @@ export function WarehousePage() {
       remark: entryData.remark,
     });
 
+    setShowModal(false);
+    setEntryData({ workOrderId: '', quantity: 0, operator: '', remark: '' });
+  };
+
+  const confirmWarehouse = () => {
+    const order = workOrders.find(o => o.id === entryData.workOrderId);
+    if (!order) return;
+    addWarehouseEntry({
+      workOrderId: entryData.workOrderId,
+      workOrderNo: order.orderNo,
+      productName: order.productName,
+      productModel: order.productModel,
+      quantity: entryData.quantity,
+      operator: entryData.operator,
+      remark: `${entryData.remark ? entryData.remark + '；' : ''}数量与工单计划不一致（计划${orderPlannedQty}件，实际入库${entryData.quantity}件）`,
+    });
+    setShowConfirmModal(false);
     setShowModal(false);
     setEntryData({ workOrderId: '', quantity: 0, operator: '', remark: '' });
   };
@@ -270,10 +301,44 @@ export function WarehousePage() {
                   type="number"
                   value={entryData.quantity}
                   onChange={(e) => setEntryData({ ...entryData, quantity: Number(e.target.value) })}
-                  className="w-full h-10 bg-[#272E3B] border border-[#3D4455] rounded px-3 text-sm text-white focus:outline-none focus:border-[#165DFF]"
+                  className={`w-full h-10 bg-[#272E3B] border rounded px-3 text-sm text-white focus:outline-none transition-colors ${
+                    quantityMismatch ? 'border-[#FF7D00] focus:border-[#FF7D00]' : 'border-[#3D4455] focus:border-[#165DFF]'
+                  }`}
                   min="1"
                   required
                 />
+                {selectedOrderForEntry && (
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                    <div className="px-2 py-1.5 bg-[#272E3B] rounded">
+                      <span className="text-[#86909C]">工单计划</span>
+                      <p className="text-white font-mono mt-0.5">{orderPlannedQty}件</p>
+                    </div>
+                    <div className="px-2 py-1.5 bg-[#272E3B] rounded">
+                      <span className="text-[#86909C]">合格产量</span>
+                      <p className="text-[#00B42A] font-mono mt-0.5">{orderQualifiedQty}件</p>
+                    </div>
+                    <div className={`px-2 py-1.5 rounded ${quantityMismatch ? 'bg-[#FF7D00]/15' : 'bg-[#00B42A]/15'}`}>
+                      <span className="text-[#86909C]">差异</span>
+                      <p className={`font-mono mt-0.5 ${
+                        quantityMismatch
+                          ? (isShortDelivery ? 'text-[#F53F3F]' : 'text-[#FF7D00]')
+                          : 'text-[#00B42A]'
+                      }`}>
+                        {entryData.quantity - orderPlannedQty > 0 ? '+' : ''}{entryData.quantity - orderPlannedQty}件
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {quantityMismatch && (
+                  <div className="mt-2 flex items-start gap-2 px-3 py-2 bg-[#FF7D00]/10 border border-[#FF7D00]/30 rounded text-xs text-[#FF7D00]">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    <span>
+                      {isShortDelivery
+                        ? `入库数量比工单计划少 ${orderPlannedQty - entryData.quantity} 件，确认后将标记短交，需关注客户交付影响`
+                        : `入库数量比工单计划多 ${entryData.quantity - orderPlannedQty} 件，请确认是否为超产入库`}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -315,6 +380,82 @@ export function WarehousePage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showConfirmModal && selectedOrderForEntry && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-[#1D2129] rounded-lg border border-[#FF7D00]/40 w-[460px]">
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-[#2D3340]">
+              <div className="w-9 h-9 rounded-lg bg-[#FF7D00]/20 flex items-center justify-center">
+                <AlertTriangle className="w-5 h-5 text-[#FF7D00]" />
+              </div>
+              <h3 className="font-semibold text-white">入库数量核对提醒</h3>
+              <button
+                onClick={() => setShowConfirmModal(false)}
+                className="ml-auto text-[#86909C] hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <p className="text-sm text-[#C9CDD4]">
+                工单 <span className="text-white font-mono">{selectedOrderForEntry.orderNo}</span> 的入库数量与计划不一致，请确认后再同步入库状态。
+              </p>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-[#272E3B] rounded-lg p-3 text-center">
+                  <p className="text-[#86909C] text-xs">工单计划</p>
+                  <p className="text-white text-lg font-mono mt-1">{orderPlannedQty}</p>
+                  <p className="text-[#86909C] text-[10px]">件</p>
+                </div>
+                <div className="bg-[#272E3B] rounded-lg p-3 text-center">
+                  <p className="text-[#86909C] text-xs">本次入库</p>
+                  <p className="text-[#FF7D00] text-lg font-mono mt-1">{entryData.quantity}</p>
+                  <p className="text-[#86909C] text-[10px]">件</p>
+                </div>
+                <div className="bg-[#272E3B] rounded-lg p-3 text-center">
+                  <p className="text-[#86909C] text-xs">数量差异</p>
+                  <p className={`text-lg font-mono mt-1 ${
+                    isShortDelivery ? 'text-[#F53F3F]' : 'text-[#FF7D00]'
+                  }`}>
+                    {entryData.quantity - orderPlannedQty > 0 ? '+' : ''}{entryData.quantity - orderPlannedQty}
+                  </p>
+                  <p className="text-[#86909C] text-[10px]">件</p>
+                </div>
+              </div>
+
+              <div className={`px-3 py-2.5 rounded text-xs ${
+                isShortDelivery
+                  ? 'bg-[#F53F3F]/10 border border-[#F53F3F]/30 text-[#F53F3F]'
+                  : 'bg-[#FF7D00]/10 border border-[#FF7D00]/30 text-[#FF7D00]'
+              }`}>
+                {isShortDelivery
+                  ? '⚠ 短交提醒：入库数量少于工单计划，将标记为短交，可能影响客户按时交付。'
+                  : 'ℹ 超产提醒：入库数量多于工单计划，请确认是否为超产入库。'}
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2 border-t border-[#2D3340]">
+                <button
+                  onClick={() => setShowConfirmModal(false)}
+                  className="px-4 py-2 text-sm text-[#C9CDD4] hover:text-white transition-colors"
+                >
+                  返回修改
+                </button>
+                <button
+                  onClick={confirmWarehouse}
+                  className={`px-4 py-2 text-white text-sm rounded transition-colors ${
+                    isShortDelivery
+                      ? 'bg-[#F53F3F] hover:bg-[#B32929]'
+                      : 'bg-[#FF7D00] hover:bg-[#B35800]'
+                  }`}
+                >
+                  确认按此数量入库
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
