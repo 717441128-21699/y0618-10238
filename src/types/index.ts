@@ -29,6 +29,7 @@ export interface WorkOrder {
   customerName?: string;
   priority?: 'low' | 'medium' | 'high';
   defaultWarehouseQty?: number;
+  justCreated?: boolean;
 }
 
 export type ProcessTaskStatus = 'pending' | 'in_progress' | 'completed';

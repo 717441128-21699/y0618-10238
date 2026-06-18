@@ -30,6 +30,7 @@ interface AppState {
   warehouseEntries: WarehouseEntry[];
   scheduleVersion: number;
   lastRescheduleImpacts: RescheduleImpact[];
+  lastScheduleResults: ScheduleResult[];
   
   addWorkOrder: (order: Omit<WorkOrder, 'id' | 'orderNo' | 'createdAt' | 'status'>) => void;
   updateWorkOrder: (id: string, updates: Partial<WorkOrder>) => void;
@@ -45,6 +46,7 @@ interface AppState {
   addWarehouseEntry: (entry: Omit<WarehouseEntry, 'id' | 'entryTime'>) => void;
   
   computeSchedule: () => ScheduleResult[];
+  getScheduleResults: () => ScheduleResult[];
   getBottlenecks: () => BottleneckInfo[];
   getDashboardMetrics: () => DashboardMetrics;
   rescheduleAll: () => number;
@@ -74,6 +76,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   warehouseEntries: mockWarehouseEntries,
   scheduleVersion: 1,
   lastRescheduleImpacts: [],
+  lastScheduleResults: [],
 
   addWorkOrder: (orderData) => {
     const product = get().products.find(p => p.id === orderData.productId);
@@ -88,6 +91,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       createdAt: new Date().toISOString().split('T')[0],
       productName: product.name,
       productModel: product.model,
+      justCreated: true,
     };
     
     const newTasks: ProcessTask[] = product.processRoute.map((step, index) => {
@@ -114,6 +118,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       workOrders: [newOrder, ...state.workOrders],
       processTasks: [...newTasks, ...state.processTasks],
       scheduleVersion: state.scheduleVersion + 1,
+      lastScheduleResults: [],
     }));
   },
 
@@ -179,6 +184,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return updated || t;
       }),
       scheduleVersion: state.scheduleVersion + 1,
+      lastScheduleResults: [],
     }));
   },
 
@@ -227,6 +233,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         workOrders: updatedOrders,
         workstations: updatedWorkstations,
         scheduleVersion: state.scheduleVersion + 1,
+        lastScheduleResults: [],
       };
     });
   },
@@ -253,9 +260,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const allCompleted = orderTasks.every(t => t.status === 'completed');
       const lastSeq = Math.max(...orderTasks.map(t => t.seq));
       const isLastTask = task.seq === lastSeq;
-      const totalQualifiedQty = isLastTask
-        ? orderTasks.reduce((sum, t) => sum + t.qualifiedQty, 0) + 0
-        : 0;
+      const defaultWarehouseQty = isLastTask ? qualifiedQty : 0;
 
       const updatedOrders = state.workOrders.map(o => {
         if (o.id !== task.workOrderId) return o;
@@ -264,8 +269,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           updates.status = 'completed';
           updates.actualCompletionDate = now.split('T')[0];
         }
-        if (isLastTask && totalQualifiedQty > 0) {
-          updates.defaultWarehouseQty = totalQualifiedQty;
+        if (isLastTask && defaultWarehouseQty > 0) {
+          updates.defaultWarehouseQty = defaultWarehouseQty;
         }
         return Object.keys(updates).length > 0 ? { ...o, ...updates } : o;
       });
@@ -275,6 +280,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         workOrders: updatedOrders,
         workstations: updatedWorkstations,
         scheduleVersion: state.scheduleVersion + 1,
+        lastScheduleResults: [],
       };
     });
   },
@@ -312,6 +318,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           : o
       ),
       scheduleVersion: state.scheduleVersion + 1,
+      lastScheduleResults: [],
     }));
   },
 
@@ -331,9 +338,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sortedOrders = [...workOrders]
       .filter(o => o.status !== 'completed' && o.status !== 'warehoused')
       .sort((a, b) => {
-        const dateA = new Date(a.deliveryDate).getTime();
-        const dateB = new Date(b.deliveryDate).getTime();
-        return dateA - dateB;
+        const priorityOrder = { high: 0, medium: 1, low: 2 };
+        const pa = priorityOrder[a.priority || 'medium'];
+        const pb = priorityOrder[b.priority || 'medium'];
+        if (pa !== pb) return pa - pb;
+        return new Date(a.deliveryDate).getTime() - new Date(b.deliveryDate).getTime();
       });
     
     sortedOrders.forEach(order => {
@@ -405,6 +414,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     
     return results;
+  },
+
+  getScheduleResults: () => {
+    const { lastScheduleResults } = get();
+    if (lastScheduleResults.length > 0) {
+      return lastScheduleResults;
+    }
+    return get().computeSchedule();
   },
 
   getBottlenecks: () => {
@@ -524,91 +541,40 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   rescheduleAll: () => {
-    const { workOrders, products, workstations, processTasks } = get();
-    const workHoursPerDay = 8;
-    const startOfDay = new Date();
-    startOfDay.setHours(8, 0, 0, 0);
+    const { workOrders, processTasks } = get();
 
-    const activeOrders = [...workOrders]
-      .filter(o => o.status !== 'completed' && o.status !== 'warehoused')
-      .sort((a, b) => {
-        const priorityOrder = { high: 0, medium: 1, low: 2 };
-        const pa = priorityOrder[a.priority || 'medium'];
-        const pb = priorityOrder[b.priority || 'medium'];
-        if (pa !== pb) return pa - pb;
-        return new Date(a.deliveryDate).getTime() - new Date(b.deliveryDate).getTime();
-      });
-
-    const workstationQueues: Record<string, Date> = {};
-    workstations.forEach(ws => {
-      workstationQueues[ws.id] = new Date(startOfDay);
-    });
+    const results = get().computeSchedule();
 
     const orderUpdates: Record<string, { scheduledStartDate?: string; estimatedCompletionDate?: string; status: WorkOrder['status'] }> = {};
     const taskUpdates: Record<string, { workstationId: string; workstationName: string }> = {};
 
-    activeOrders.forEach(order => {
-      const product = products.find(p => p.id === order.productId);
-      if (!product) return;
-
+    results.forEach(result => {
+      const order = workOrders.find(o => o.id === result.workOrderId);
+      if (!order) return;
       const orderTasks = processTasks
-        .filter(t => t.workOrderId === order.id)
+        .filter(t => t.workOrderId === result.workOrderId)
         .sort((a, b) => a.seq - b.seq);
 
-      let prevTaskEnd: Date | null = null;
-
-      orderTasks.forEach(task => {
-        const step = product.processRoute.find(s => s.name === task.processName);
-        if (!step) return;
-
-        const availableWorkstations = workstations.filter(
-          ws => ws.type === step.workstationType && ws.status !== 'down'
-        );
-        if (availableWorkstations.length === 0) return;
-
-        let earliestWs = availableWorkstations[0];
-        let earliestTime = workstationQueues[earliestWs.id];
-        availableWorkstations.forEach(ws => {
-          if (workstationQueues[ws.id] < earliestTime) {
-            earliestTime = workstationQueues[ws.id];
-            earliestWs = ws;
-          }
-        });
-
-        let taskStart: Date;
-        if (task.status === 'in_progress' && task.startTime) {
-          taskStart = new Date(task.startTime);
-        } else if (prevTaskEnd) {
-          taskStart = new Date(Math.max(prevTaskEnd.getTime(), earliestTime.getTime()));
-        } else {
-          taskStart = new Date(earliestTime);
-        }
-
-        const totalMinutes = order.quantity * step.cycleTime;
-        const totalHours = totalMinutes / 60;
-        const workDays = Math.ceil(totalHours / workHoursPerDay);
-        const actualDurationHours = Math.max(workDays * workHoursPerDay, 1);
-        const taskEnd = new Date(taskStart.getTime() + actualDurationHours * 60 * 60 * 1000);
-
-        workstationQueues[earliestWs.id] = taskEnd;
-        prevTaskEnd = taskEnd;
-
-        if (task.status === 'pending') {
-          taskUpdates[task.id] = {
-            workstationId: earliestWs.id,
-            workstationName: earliestWs.name,
-          };
-        }
-      });
-
-      const orderStartDate = startOfDay.toISOString().split('T')[0];
-      const orderEndDate = prevTaskEnd ? prevTaskEnd.toISOString().split('T')[0] : undefined;
+      const firstTask = result.tasks[0];
+      const lastTask = result.tasks[result.tasks.length - 1];
+      const orderStartDate = firstTask ? firstTask.plannedStart.split('T')[0] : undefined;
+      const orderEndDate = lastTask ? lastTask.plannedEnd.split('T')[0] : undefined;
       const newStatus: WorkOrder['status'] = order.status === 'producing' ? 'producing' : 'scheduled';
-      orderUpdates[order.id] = {
+      orderUpdates[result.workOrderId] = {
         scheduledStartDate: orderStartDate,
         estimatedCompletionDate: orderEndDate,
         status: newStatus,
       };
+
+      result.tasks.forEach(schedTask => {
+        const matchedTask = orderTasks.find(t => t.seq === schedTask.seq);
+        if (matchedTask && matchedTask.status === 'pending') {
+          taskUpdates[matchedTask.id] = {
+            workstationId: schedTask.workstationId,
+            workstationName: schedTask.workstationName,
+          };
+        }
+      });
     });
 
     set((state) => ({
@@ -627,34 +593,40 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!upd) return t;
         return { ...t, workstationId: upd.workstationId, workstationName: upd.workstationName };
       }),
+      lastScheduleResults: results,
       scheduleVersion: state.scheduleVersion + 1,
     }));
 
-    return activeOrders.length;
+    return results.length;
   },
 
   rescheduleAllWithImpact: () => {
-    const { workOrders, products, workstations, processTasks } = get();
-    const beforeMap: Record<string, string | undefined> = {};
+    const { workOrders } = get();
+    const beforeMap: Record<string, { estDate?: string; justCreated: boolean }> = {};
     workOrders.forEach(o => {
-      beforeMap[o.id] = o.estimatedCompletionDate;
+      beforeMap[o.id] = {
+        estDate: o.estimatedCompletionDate,
+        justCreated: o.justCreated === true,
+      };
     });
 
     const count = get().rescheduleAll();
 
     const impacts: RescheduleImpact[] = [];
     get().workOrders.forEach(o => {
-      const oldDate = beforeMap[o.id];
+      const before = beforeMap[o.id];
+      const oldDate = before?.estDate;
       const newDate = o.estimatedCompletionDate;
+      const wasJustCreated = before?.justCreated === true;
+
       let delayDays = 0;
       if (oldDate && newDate) {
         delayDays = Math.ceil(
           (new Date(newDate).getTime() - new Date(oldDate).getTime()) / (1000 * 60 * 60 * 24)
         );
-      } else if (!oldDate && newDate) {
-        delayDays = 0;
       }
-      const isAffected = !oldDate || delayDays !== 0;
+
+      const isAffected = wasJustCreated || (oldDate !== undefined && delayDays !== 0);
       if (isAffected) {
         impacts.push({
           workOrderId: o.id,
@@ -663,13 +635,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           oldEstimatedCompletion: oldDate,
           newEstimatedCompletion: newDate,
           delayDays,
-          isNewOrder: !oldDate,
+          isNewOrder: wasJustCreated,
         });
       }
     });
 
     set((state) => ({
       lastRescheduleImpacts: impacts,
+      workOrders: state.workOrders.map(o => ({ ...o, justCreated: false })),
     }));
 
     return { count, impacts };
@@ -681,7 +654,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   getDeliveryRisks: (): DeliveryRiskInfo[] => {
     const { workOrders, processTasks, products, workstations } = get();
-    const schedules = get().computeSchedule();
+    const schedules = get().getScheduleResults();
     const bottlenecks = get().getBottlenecks();
     const results: DeliveryRiskInfo[] = [];
 

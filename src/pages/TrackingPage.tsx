@@ -18,7 +18,7 @@ import {
 
 export function TrackingPage() {
   const scheduleVersion = useAppStore(s => s.scheduleVersion);
-  const { workOrders, processTasks, getWorkOrderProgress, getTasksByWorkOrder, computeSchedule, getBottlenecks, products } = useAppStore();
+  const { workOrders, processTasks, getWorkOrderProgress, getTasksByWorkOrder, getScheduleResults, getBottlenecks, products } = useAppStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOrder, setSelectedOrder] = useState<string | null>(null);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -56,9 +56,9 @@ export function TrackingPage() {
 
   const orderSchedule = useMemo(() => {
     if (!selectedOrder) return null;
-    const allSchedules = computeSchedule();
+    const allSchedules = getScheduleResults();
     return allSchedules.find(s => s.workOrderId === selectedOrder) || null;
-  }, [selectedOrder, computeSchedule, scheduleVersion]);
+  }, [selectedOrder, getScheduleResults, scheduleVersion]);
 
   const orderBottlenecks = useMemo(() => {
     if (!selectedOrderData) return [];
@@ -70,12 +70,23 @@ export function TrackingPage() {
   }, [selectedOrderData, products, getBottlenecks, scheduleVersion]);
 
   const estimatedVsDeliveryRisk = useMemo(() => {
-    if (!selectedOrderData || !selectedOrderData.estimatedCompletionDate) return null;
-    const estimated = new Date(selectedOrderData.estimatedCompletionDate);
+    if (!selectedOrderData) return null;
+    const schedule = orderSchedule;
+    const estimatedDateStr = schedule && schedule.tasks.length > 0
+      ? schedule.tasks[schedule.tasks.length - 1].plannedEnd.split('T')[0]
+      : selectedOrderData.estimatedCompletionDate;
+    if (!estimatedDateStr) return null;
+    const estimated = new Date(estimatedDateStr);
     const delivery = new Date(selectedOrderData.deliveryDate);
-    const diffDays = Math.ceil((delivery.getTime() - estimated.getTime()) / (1000 * 60 * 60 * 24));
-    return { diffDays, isAtRisk: diffDays < 0 };
-  }, [selectedOrderData, scheduleVersion]);
+    const delayDays = Math.ceil((estimated.getTime() - delivery.getTime()) / (1000 * 60 * 60 * 24));
+    return {
+      estimatedDateStr,
+      delayDays: delayDays > 0 ? delayDays : 0,
+      isAtRisk: delayDays > 0,
+      isSafe: delayDays < 0,
+      safeDays: delayDays < 0 ? Math.abs(delayDays) : 0,
+    };
+  }, [selectedOrderData, orderSchedule, scheduleVersion]);
 
   return (
     <div className="space-y-6">
@@ -352,13 +363,15 @@ export function TrackingPage() {
                 <div className="bg-[#272E3B] rounded-lg p-3">
                   <p className="text-[#86909C] text-xs">计划投产</p>
                   <p className="text-white text-sm font-mono mt-1">
-                    {selectedOrderData.scheduledStartDate || '未排程'}
+                    {orderSchedule && orderSchedule.tasks.length > 0
+                      ? orderSchedule.tasks[0].plannedStart.split('T')[0]
+                      : selectedOrderData.scheduledStartDate || '未排程'}
                   </p>
                 </div>
                 <div className="bg-[#272E3B] rounded-lg p-3">
                   <p className="text-[#86909C] text-xs">预计完工</p>
                   <p className="text-white text-sm font-mono mt-1">
-                    {selectedOrderData.estimatedCompletionDate || '未计算'}
+                    {estimatedVsDeliveryRisk?.estimatedDateStr || selectedOrderData.estimatedCompletionDate || '未计算'}
                   </p>
                 </div>
                 <div className="bg-[#272E3B] rounded-lg p-3">
@@ -383,11 +396,11 @@ export function TrackingPage() {
                       estimatedVsDeliveryRisk.isAtRisk ? 'text-[#F53F3F]' : 'text-[#00B42A]'
                     }`}>
                       {estimatedVsDeliveryRisk.isAtRisk
-                        ? `交期风险：预计完工日晚于交货期 ${Math.abs(estimatedVsDeliveryRisk.diffDays)} 天`
-                        : `交期正常：预计完工早于交货期 ${estimatedVsDeliveryRisk.diffDays} 天`}
+                        ? `交期风险：预计完工日晚于交货期 ${estimatedVsDeliveryRisk.delayDays} 天`
+                        : `交期正常：预计完工早于交货期 ${estimatedVsDeliveryRisk.safeDays} 天`}
                     </p>
                     <p className="text-[#86909C] text-xs mt-0.5">
-                      客服可据此判断是否需要与客户沟通调整交期
+                      预计完工 {estimatedVsDeliveryRisk.estimatedDateStr} · 交货日期 {selectedOrderData.deliveryDate}
                     </p>
                   </div>
                 </div>

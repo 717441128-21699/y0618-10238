@@ -27,7 +27,7 @@ export function SchedulingPage() {
   const clearLastImpacts = useAppStore(s => s.clearLastImpacts);
 
   const {
-    computeSchedule,
+    getScheduleResults,
     getBottlenecks,
     workOrders,
     workstations,
@@ -43,7 +43,7 @@ export function SchedulingPage() {
   const [expandedRisk, setExpandedRisk] = useState<string | null>(null);
   const [showImpactPanel, setShowImpactPanel] = useState(true);
 
-  const schedules = useMemo(() => computeSchedule(), [computeSchedule, scheduleVersion]);
+  const schedules = useMemo(() => getScheduleResults(), [getScheduleResults, scheduleVersion]);
   const bottlenecks = useMemo(() => getBottlenecks(), [getBottlenecks, scheduleVersion]);
   const deliveryRisks = useMemo(() => getDeliveryRisks(), [getDeliveryRisks, scheduleVersion]);
 
