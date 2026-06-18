@@ -9,6 +9,8 @@ import {
   ScheduleResult,
   BottleneckInfo,
   DashboardMetrics,
+  RescheduleImpact,
+  DeliveryRiskInfo,
 } from '../types';
 import {
   mockWorkOrders,
@@ -26,6 +28,8 @@ interface AppState {
   workstations: Workstation[];
   exceptions: ExceptionItem[];
   warehouseEntries: WarehouseEntry[];
+  scheduleVersion: number;
+  lastRescheduleImpacts: RescheduleImpact[];
   
   addWorkOrder: (order: Omit<WorkOrder, 'id' | 'orderNo' | 'createdAt' | 'status'>) => void;
   updateWorkOrder: (id: string, updates: Partial<WorkOrder>) => void;
@@ -44,6 +48,9 @@ interface AppState {
   getBottlenecks: () => BottleneckInfo[];
   getDashboardMetrics: () => DashboardMetrics;
   rescheduleAll: () => number;
+  rescheduleAllWithImpact: () => { count: number; impacts: RescheduleImpact[] };
+  getDeliveryRisks: () => DeliveryRiskInfo[];
+  clearLastImpacts: () => void;
   
   getTasksByWorkOrder: (workOrderId: string) => ProcessTask[];
   getWorkOrderProgress: (workOrderId: string) => number;
@@ -65,6 +72,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   workstations: mockWorkstations,
   exceptions: mockExceptions,
   warehouseEntries: mockWarehouseEntries,
+  scheduleVersion: 1,
+  lastRescheduleImpacts: [],
 
   addWorkOrder: (orderData) => {
     const product = get().products.find(p => p.id === orderData.productId);
@@ -104,6 +113,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({ 
       workOrders: [newOrder, ...state.workOrders],
       processTasks: [...newTasks, ...state.processTasks],
+      scheduleVersion: state.scheduleVersion + 1,
     }));
   },
 
@@ -168,6 +178,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const updated = updatedTasks.find(u => u.id === t.id);
         return updated || t;
       }),
+      scheduleVersion: state.scheduleVersion + 1,
     }));
   },
 
@@ -211,7 +222,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           : w
       );
       
-      return { processTasks: updatedTasks, workOrders: updatedOrders, workstations: updatedWorkstations };
+      return {
+        processTasks: updatedTasks,
+        workOrders: updatedOrders,
+        workstations: updatedWorkstations,
+        scheduleVersion: state.scheduleVersion + 1,
+      };
     });
   },
 
@@ -233,18 +249,33 @@ export const useAppStore = create<AppState>((set, get) => ({
           : w
       );
       
-      const orderTasks = updatedTasks.filter(t => t.workOrderId === task.workOrderId);
+      const orderTasks = updatedTasks.filter(t => t.workOrderId === task.workOrderId).sort((a, b) => a.seq - b.seq);
       const allCompleted = orderTasks.every(t => t.status === 'completed');
-      
+      const lastSeq = Math.max(...orderTasks.map(t => t.seq));
+      const isLastTask = task.seq === lastSeq;
+      const totalQualifiedQty = isLastTask
+        ? orderTasks.reduce((sum, t) => sum + t.qualifiedQty, 0) + 0
+        : 0;
+
       const updatedOrders = state.workOrders.map(o => {
         if (o.id !== task.workOrderId) return o;
+        const updates: Partial<WorkOrder> = {};
         if (allCompleted) {
-          return { ...o, status: 'completed' as const, actualCompletionDate: now.split('T')[0] };
+          updates.status = 'completed';
+          updates.actualCompletionDate = now.split('T')[0];
         }
-        return o;
+        if (isLastTask && totalQualifiedQty > 0) {
+          updates.defaultWarehouseQty = totalQualifiedQty;
+        }
+        return Object.keys(updates).length > 0 ? { ...o, ...updates } : o;
       });
       
-      return { processTasks: updatedTasks, workOrders: updatedOrders, workstations: updatedWorkstations };
+      return {
+        processTasks: updatedTasks,
+        workOrders: updatedOrders,
+        workstations: updatedWorkstations,
+        scheduleVersion: state.scheduleVersion + 1,
+      };
     });
   },
 
@@ -280,6 +311,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...o, status: 'warehoused' as const }
           : o
       ),
+      scheduleVersion: state.scheduleVersion + 1,
     }));
   },
 
@@ -595,8 +627,149 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (!upd) return t;
         return { ...t, workstationId: upd.workstationId, workstationName: upd.workstationName };
       }),
+      scheduleVersion: state.scheduleVersion + 1,
     }));
 
     return activeOrders.length;
+  },
+
+  rescheduleAllWithImpact: () => {
+    const { workOrders, products, workstations, processTasks } = get();
+    const beforeMap: Record<string, string | undefined> = {};
+    workOrders.forEach(o => {
+      beforeMap[o.id] = o.estimatedCompletionDate;
+    });
+
+    const count = get().rescheduleAll();
+
+    const impacts: RescheduleImpact[] = [];
+    get().workOrders.forEach(o => {
+      const oldDate = beforeMap[o.id];
+      const newDate = o.estimatedCompletionDate;
+      let delayDays = 0;
+      if (oldDate && newDate) {
+        delayDays = Math.ceil(
+          (new Date(newDate).getTime() - new Date(oldDate).getTime()) / (1000 * 60 * 60 * 24)
+        );
+      } else if (!oldDate && newDate) {
+        delayDays = 0;
+      }
+      const isAffected = !oldDate || delayDays !== 0;
+      if (isAffected) {
+        impacts.push({
+          workOrderId: o.id,
+          workOrderNo: o.orderNo,
+          productName: o.productName,
+          oldEstimatedCompletion: oldDate,
+          newEstimatedCompletion: newDate,
+          delayDays,
+          isNewOrder: !oldDate,
+        });
+      }
+    });
+
+    set((state) => ({
+      lastRescheduleImpacts: impacts,
+    }));
+
+    return { count, impacts };
+  },
+
+  clearLastImpacts: () => {
+    set({ lastRescheduleImpacts: [] });
+  },
+
+  getDeliveryRisks: (): DeliveryRiskInfo[] => {
+    const { workOrders, processTasks, products, workstations } = get();
+    const schedules = get().computeSchedule();
+    const bottlenecks = get().getBottlenecks();
+    const results: DeliveryRiskInfo[] = [];
+
+    workOrders.forEach(order => {
+      if (order.status === 'completed' || order.status === 'warehoused') return;
+
+      const schedule = schedules.find(s => s.workOrderId === order.id);
+      const estimatedEnd = schedule && schedule.tasks.length > 0
+        ? new Date(schedule.tasks[schedule.tasks.length - 1].plannedEnd)
+        : (order.estimatedCompletionDate ? new Date(order.estimatedCompletionDate) : null);
+      const delivery = new Date(order.deliveryDate);
+      let delayDays = 0;
+      if (estimatedEnd) {
+        delayDays = Math.ceil(
+          (estimatedEnd.getTime() - delivery.getTime()) / (1000 * 60 * 60 * 24)
+        );
+      }
+      if (delayDays < 0) delayDays = 0;
+      if (!estimatedEnd) delayDays = 0;
+
+      const suggestions: string[] = [];
+      let stuckProcess: string | undefined;
+      let stuckWorkstationType: string | undefined;
+
+      if (estimatedEnd && delayDays > 0) {
+        const product = products.find(p => p.id === order.productId);
+        const orderTasks = processTasks.filter(t => t.workOrderId === order.id);
+
+        const inProgressTask = orderTasks.find(t => t.status === 'in_progress');
+        const pendingTask = [...orderTasks].sort((a, b) => a.seq - b.seq).find(t => t.status === 'pending');
+
+        let checkTask: typeof orderTasks[0] | undefined = inProgressTask || pendingTask;
+        if (checkTask) {
+          const step = product?.processRoute.find(s => s.name === checkTask!.processName);
+          if (step) {
+            stuckProcess = step.name;
+            stuckWorkstationType = step.workstationType;
+            const bottle = bottlenecks.find(b => b.workstationType === step.workstationType);
+            if (bottle?.isBottleneck) {
+              suggestions.push(`【${step.workstationType}】机台负载 ${bottle.workload}%，优先安排该工单在空闲同类型机台生产`);
+            } else {
+              suggestions.push(`检查【${step.name}】物料到位情况，尽快启动`);
+            }
+          }
+        }
+
+        if (schedule) {
+          const longTask = [...schedule.tasks].sort((a, b) => b.duration - a.duration)[0];
+          if (longTask && longTask.processName !== stuckProcess) {
+            const sameTypeWs = workstations.filter(
+              w => w.type === stuckWorkstationType || 
+              schedule.tasks.find(t => t.workstationId === w.id)?.processName === longTask.processName
+            );
+            const idleCount = sameTypeWs.filter(w => w.status === 'idle').length;
+            if (idleCount > 0) {
+              suggestions.push(`工时最长工序【${longTask.processName}】有 ${idleCount} 台空闲机台，可协调并行处理`);
+            }
+          }
+        }
+
+        if (delayDays >= 3) {
+          suggestions.push(`建议提前与客户沟通交期，延迟约 ${delayDays} 天`);
+        }
+
+        const highPriority = order.priority === 'high';
+        if (highPriority && delayDays > 0) {
+          suggestions.push('该工单为高优先级，可暂停普通工单以让该机台优先生产');
+        }
+
+        if (suggestions.length === 0) {
+          suggestions.push('建议关注该工单进度，必要时协调加班补产');
+        }
+
+        results.push({
+          workOrderId: order.id,
+          workOrderNo: order.orderNo,
+          productName: order.productName,
+          deliveryDate: order.deliveryDate,
+          estimatedCompletion: estimatedEnd ? estimatedEnd.toISOString().split('T')[0] : undefined,
+          delayDays,
+          stuckProcess,
+          stuckWorkstationType,
+          priority: order.priority,
+          suggestions,
+        });
+      }
+    });
+
+    return results.sort((a, b) => b.delayDays - a.delayDays);
   },
 }));

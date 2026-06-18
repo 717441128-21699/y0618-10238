@@ -28,6 +28,7 @@ export interface WorkOrder {
   actualCompletionDate?: string;
   customerName?: string;
   priority?: 'low' | 'medium' | 'high';
+  defaultWarehouseQty?: number;
 }
 
 export type ProcessTaskStatus = 'pending' | 'in_progress' | 'completed';
@@ -130,4 +131,27 @@ export interface DashboardMetrics {
   equipmentUtilization: number;
   producingOrders: number;
   completedToday: number;
+}
+
+export interface RescheduleImpact {
+  workOrderId: string;
+  workOrderNo: string;
+  productName: string;
+  oldEstimatedCompletion?: string;
+  newEstimatedCompletion?: string;
+  delayDays: number;
+  isNewOrder: boolean;
+}
+
+export interface DeliveryRiskInfo {
+  workOrderId: string;
+  workOrderNo: string;
+  productName: string;
+  deliveryDate: string;
+  estimatedCompletion?: string;
+  delayDays: number;
+  stuckProcess?: string;
+  stuckWorkstationType?: string;
+  priority?: 'low' | 'medium' | 'high';
+  suggestions: string[];
 }

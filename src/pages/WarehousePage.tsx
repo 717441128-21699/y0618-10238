@@ -74,11 +74,22 @@ export function WarehousePage() {
 
   const handleSelectOrder = (orderId: string) => {
     const order = workOrders.find(o => o.id === orderId);
+    const orderTasks = processTasks.filter(t => t.workOrderId === orderId).sort((a, b) => a.seq - b.seq);
+    const lastTask = orderTasks[orderTasks.length - 1];
+    const allQualifiedQty = orderTasks.reduce((s, t) => Math.max(s, t.qualifiedQty), 0);
+    const defaultQtyFromTask = lastTask?.qualifiedQty && lastTask.qualifiedQty > 0
+      ? lastTask.qualifiedQty
+      : allQualifiedQty > 0 ? allQualifiedQty : 0;
+
     setEntryData({
       workOrderId: orderId,
-      quantity: order?.quantity || 0,
+      quantity: order?.defaultWarehouseQty && order.defaultWarehouseQty > 0
+        ? order.defaultWarehouseQty
+        : defaultQtyFromTask > 0
+          ? defaultQtyFromTask
+          : (order?.quantity || 0),
       operator: '',
-      remark: '',
+      remark: defaultQtyFromTask > 0 ? '已按最后工序合格数预填入库数量' : '',
     });
   };
 

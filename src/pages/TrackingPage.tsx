@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 
 export function TrackingPage() {
+  const scheduleVersion = useAppStore(s => s.scheduleVersion);
   const { workOrders, processTasks, getWorkOrderProgress, getTasksByWorkOrder, computeSchedule, getBottlenecks, products } = useAppStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedOrder, setSelectedOrder] = useState<string | null>(null);
@@ -57,7 +58,7 @@ export function TrackingPage() {
     if (!selectedOrder) return null;
     const allSchedules = computeSchedule();
     return allSchedules.find(s => s.workOrderId === selectedOrder) || null;
-  }, [selectedOrder, computeSchedule]);
+  }, [selectedOrder, computeSchedule, scheduleVersion]);
 
   const orderBottlenecks = useMemo(() => {
     if (!selectedOrderData) return [];
@@ -66,7 +67,7 @@ export function TrackingPage() {
     const allBottlenecks = getBottlenecks();
     const orderProcessTypes = [...new Set(product.processRoute.map(s => s.workstationType))];
     return allBottlenecks.filter(b => orderProcessTypes.includes(b.workstationType));
-  }, [selectedOrderData, products, getBottlenecks]);
+  }, [selectedOrderData, products, getBottlenecks, scheduleVersion]);
 
   const estimatedVsDeliveryRisk = useMemo(() => {
     if (!selectedOrderData || !selectedOrderData.estimatedCompletionDate) return null;
@@ -74,7 +75,7 @@ export function TrackingPage() {
     const delivery = new Date(selectedOrderData.deliveryDate);
     const diffDays = Math.ceil((delivery.getTime() - estimated.getTime()) / (1000 * 60 * 60 * 24));
     return { diffDays, isAtRisk: diffDays < 0 };
-  }, [selectedOrderData]);
+  }, [selectedOrderData, scheduleVersion]);
 
   return (
     <div className="space-y-6">
